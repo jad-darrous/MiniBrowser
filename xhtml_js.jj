@@ -1,0 +1,3474 @@
+options {
+	STATIC = false;
+}
+
+PARSER_BEGIN(MiniBrowser)
+
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.InputStream;
+import java.io.IOException;
+
+import java.util.Vector;
+import java.util.Stack;
+import java.util.List;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.HashMap;
+
+import java.lang.reflect.Field;
+import java.text.AttributedString;
+
+import javax.swing.*;
+import javax.imageio.*;
+
+import java.awt.Component;
+import java.awt.Color;
+import java.awt.Cursor;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.Image;
+
+import java.awt.font.TextAttribute;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
+
+
+public class MiniBrowser extends JFrame
+{
+	final JPanel mainPanel = new JPanel();
+
+	final boolean DEBUG = false;
+
+	htmlElement root;
+
+	static Stack<Format> formatStk = new Stack<Format>();
+
+	jsCodeNode parseTree = new jsCodeNode();
+	jsCodeNode currentStm = parseTree;
+	Stack<jsCodeNode> stk = new Stack<jsCodeNode>();
+
+	Map<String,funcNode> functions = new HashMap<String,funcNode>();
+
+	HashMap<String,String> varsInUse = new HashMap<String,String>();
+	Stack< HashMap<String,String> > ST = new Stack< HashMap<String,String> >();
+
+	mathExp e, e1, e2, e3;
+	Stack<mathExp> expStk = new Stack<mathExp>();
+
+	Expression EE;
+
+	String returnValue;
+	boolean returnFlag;
+
+
+
+	public static void main(String args[])
+		throws ParseException, IOException, Exception {
+
+		MiniBrowser parser = new MiniBrowser(System.in);
+		parser.root = parser.parseHTML();
+
+		//System.out.println(parser.root.printXML(0));
+
+		if (peCount > 0) {
+			System.out.println("\n\nThere are compilation error(s)!!");
+			System.out.println("Please, fix them first to render the page");
+			return;
+		}
+
+		try {
+			parser.executeVisual();
+		}
+		catch(Exception e){
+			System.out.println("UNHANDLED executeVisual EXECPTION");
+			System.out.println(e);
+		}
+	}
+
+	/**	the format of the visualized text */
+
+	public Color str2clr(String clr)
+	{
+		String color = clr;
+		if ( clr.startsWith("#") )
+			clr = clr.substring(1);
+		clr = clr.toLowerCase();
+		try {
+			return new Color(Integer.parseInt(clr, 16));
+		} catch (Exception e) {
+		}
+		try {
+			Field field = Class.forName("java.awt.Color").getField(color);
+			return (Color)field.get(null);
+		} catch (Exception e) {
+		}
+		badColorException(clr);
+		return null;
+	}
+	public Color str2clrText(String clr)
+	{
+		Color c = str2clr(clr);
+		return ( c == null? Color.BLACK : c );
+	}
+	public Color str2clrBackGround(String clr)
+	{
+		Color c = str2clr(clr);
+		return ( c == null? Color.WHITE : c );
+	}
+
+	class Format
+	{
+		//	default text format
+		boolean bold = false;
+		boolean italic = false;
+		boolean underline = false;
+		String face = "Times new roman";
+		String color = "black";
+		int size = 14;
+
+		public Format()
+		{
+		}
+		public Format(String f, String c, int s, boolean B, boolean I, boolean U)
+		{
+			face = f;
+			color = c;
+			size = s;
+			bold = B;
+			italic = I;
+			underline = U;
+		}
+		public Format(Format cpy)
+		{
+			face = cpy.face;
+			color = cpy.color;
+			size = cpy.size;
+			bold = cpy.bold;
+			italic = cpy.italic;
+			underline = cpy.underline;
+		}
+		void setStyle(char stl)
+		{
+			switch (stl){
+				case 'b' : bold = true; return ;
+				case 'i' : italic = true; return ;
+				case 'u' : underline = true; return ;
+			}
+		}
+		void setFont(String f)
+		{
+			face = f;
+		}
+		void setColor(String c)
+		{
+			color = c;
+		}
+		void setSize(String s)
+		{
+			try {
+				size = Integer.parseInt(s);
+			} catch (NumberFormatException ex) {
+				size = 14;
+				notIntegerValue("size");
+			}
+		}
+		void setSize(int s)
+		{
+			size = s;
+		}
+		int getStyle()
+		{
+			int style = 0;
+			if (bold)		style += Font.BOLD;
+			if (italic)		style += Font.ITALIC;
+			if (underline)	style += Font.ROMAN_BASELINE;
+			return style;
+		}
+		Color getColor()
+		{
+			return str2clrText(color);
+		}
+		Font getFont()
+		{
+			AttributedString as = new AttributedString("dummy text");
+
+			as.addAttribute(TextAttribute.FAMILY, face);
+			as.addAttribute(TextAttribute.SIZE, size);
+			as.addAttribute(TextAttribute.FOREGROUND, getColor());
+
+			if (bold)
+				as.addAttribute(TextAttribute.WEIGHT, TextAttribute.WEIGHT_BOLD);
+			if (italic)
+				as.addAttribute(TextAttribute.POSTURE, TextAttribute.POSTURE_OBLIQUE);
+			if (underline)
+				as.addAttribute(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON);
+
+			return new Font(as.getIterator().getAttributes());
+		}
+		/*String[] toHTML()	//	for debuging
+		{
+			String start = "<html><body>";
+			String end = "</body></html>";
+			if (bold) {
+				start += "<b>";
+				end = "</b>" + end;
+			}
+			if (italic) {
+				start += "<i>";
+				end = "</i>" + end;
+			}
+			if (underline) {
+				start += "<u>";
+				end = "</u>" + end;
+			}
+			start += "<font";
+			start += " face=" + "\"" + face + "\"";
+			start += " color=" + "\"" + color + "\"";
+			start += " size=" + "\"" + size + "\"";
+			start += ">";
+			end = "</font>" + end;
+			return new String[] {start, end};
+		}*/
+	}
+
+	/**	two functions to manage the visualization */
+
+	public void rearrangeComponent(Dimension screen, Vector<Vector<Component>> T)
+	{
+		final int hgap = 5;
+		final int vgap = 4;
+		int y = 0;
+		for (Vector<Component> row : T)
+		{
+			int index = 0;
+			while (index < row.size())
+			{
+				int w = hgap + row.get(index).getSize().width;	//	at least one element by line
+				int maxH = row.get(index).getSize().height;
+				int st = index++;
+				boolean fit = true;
+				while (index < row.size() && fit)
+				{
+					if (w + hgap + row.get(index).getSize().width < screen.width)
+					{
+						w += hgap + row.get(index).getSize().width;
+						maxH = Math.max(maxH, row.get(index).getSize().height);
+						index++;
+					} else
+						fit = false;
+				}
+				int x = hgap;
+				y += maxH + vgap;
+				for (int i=st; i<index; i++)
+				{
+					row.get(i).setLocation(x, y - row.get(i).getSize().height);
+					x +=  hgap + row.get(i).getSize().width;
+				}
+			}
+		}
+		mainPanel.setPreferredSize(new Dimension(0, y + vgap));
+	}
+
+	public void executeVisual()
+	{
+		mainPanel.setLayout(null);
+		setPreferredSize(new Dimension(800, 800));
+
+		nonEmptyElementNode body = (nonEmptyElementNode)root.getLastChild();
+		Vector<Component> allComponent = new Vector<Component>();
+
+		String bgcolor = body.getAttributeValue("bgcolor");
+		mainPanel.setBackground(bgcolor != null ? str2clrBackGround(bgcolor) : Color.white);
+
+		formatStk.push(new Format());
+		body.draw(allComponent);
+		allComponent.add(null);
+
+		final Vector<Vector<Component>> T = new Vector<Vector<Component>>();
+		Vector<Component> row = new Vector<Component>();
+
+		for (Component c : allComponent)
+		{
+			if (c == null)
+			{
+				T.add(row);
+				row = new Vector<Component>();
+			}
+			else
+			{
+				row.add(c);
+				mainPanel.add(c);
+			}
+		}
+		row = null;
+
+		mainPanel.addComponentListener(new ComponentAdapter() {
+				@Override public void componentResized(ComponentEvent e) {
+							rearrangeComponent(mainPanel.getSize(), T);
+				}
+			});
+
+    JScrollPane scrollPane = new JScrollPane(mainPanel);
+    add(scrollPane);
+    pack();
+
+		nonEmptyElementNode head = (nonEmptyElementNode)root.getFirstChild();
+		nonEmptyElementNode title = (nonEmptyElementNode)head.getFirstChild();
+		String pageTitle = ((TextNode)title.getFirstChild()).toString();
+
+		setTitle(pageTitle);
+		setLocationRelativeTo(null);
+		setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+		setVisible(true);
+	}
+
+	/** 	DOM Node	*/
+
+	abstract class DOM_Node
+	{
+		abstract public String toString();
+		abstract public String printXML(int tab);
+		abstract public DOM_Node getElement(String ID);
+		abstract public void draw(Vector<Component> allComponent);
+
+		public String getValue() {return null;}
+	}
+
+	abstract class ElementNode extends DOM_Node
+	{
+		HashMap<String, String> Attribute = new HashMap<String, String>();
+
+		public void setAttributeValue(String name, String value)
+		{
+			Attribute.put(name, value);
+		}
+		public String getAttributeValue(String name)
+		{
+			return Attribute.get(name);
+		}
+	}
+
+	abstract class emptyElementNode extends ElementNode
+	{
+		public String printXML(int tab)
+		{
+			String sp = "";
+			for (int i=0; i<tab; i++)
+				sp += "   ";
+			String s = sp + "</" + toString() + "/>\n";
+			return s;
+		}
+		public DOM_Node getElement(String ID)
+		{
+			String id = getAttributeValue("id");
+			if (id != null && id.equals(ID))
+				return this;
+			return null;
+		}
+	}
+
+	abstract class nonEmptyElementNode extends ElementNode
+	{
+		LinkedList<DOM_Node> children = new LinkedList<DOM_Node>();
+
+		public void addChild(DOM_Node child)
+		{
+			children.add(child);
+		}
+		public DOM_Node getFirstChild()
+		{
+			return children.getFirst();
+		}
+		public DOM_Node getLastChild()
+		{
+			return children.getLast();
+		}
+
+		public String printXML(int tab)
+		{
+			String sp = "";
+			for (int i=0; i<tab; i++)
+				sp += "   ";
+			String s = sp + "<" + toString() + ">\n";
+			for (DOM_Node e : children)
+				s += e.printXML(tab + 1);
+			s += sp + "</" + toString() + ">\n";
+			return s;
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			for (DOM_Node e : children)
+			{
+				e.draw(allComponent);
+			}
+		}
+		public DOM_Node getElement(String ID)
+		{
+			String id = getAttributeValue("id");
+			if (id != null && id.equals(ID))
+				return this;
+			for (DOM_Node e : children)
+			{
+				DOM_Node n = e.getElement(ID);
+				if (n != null)
+					return n;
+			}
+			return null;
+		}
+	}
+
+	class TextNode extends DOM_Node
+	{
+		private String innerHTML;
+
+		public TextNode(String text)
+		{
+			innerHTML = text;
+		}
+		public String toString()
+		{
+			return innerHTML;
+		}
+		public String printXML(int tab)
+		{
+			String sp = "";
+			for (int i=0; i<tab; i++)
+				sp += "   ";
+			return sp + innerHTML + "\n";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			Format f = formatStk.peek();
+			JLabel label = new JLabel(innerHTML);
+			label.setFont(f.getFont());
+			/*label.setFont(new Font(f.face, f.getStyle(), f.size));
+			label.setForeground(f.getColor());*/
+			int minWidth = ((int) (label.getFontMetrics(label.getFont()).getStringBounds(label.getText(),
+					label.getGraphics()).getWidth()) + label.getInsets().left + label.getInsets().right);
+			int minHeight = ((int) (label.getFontMetrics(label.getFont()).getStringBounds(label.getText(),
+					label.getGraphics()).getHeight()) + label.getInsets().top + label.getInsets().bottom);
+			int italicMargin = (f.italic ? minWidth/5 : 0) ;
+			label.setSize(minWidth + italicMargin, minHeight);
+			label.setBackground(Color.white);
+			allComponent.add(label);
+		}
+		public void drawPhrase(Vector<Component> allComponent)
+		{
+			String innerHTML = this.innerHTML + " ";
+			int st = 0;
+			int nd = innerHTML.indexOf(' ');
+			while (nd != -1)
+			{
+				String word = innerHTML.substring(st, nd);
+				TextNode temp = new TextNode(word);
+				temp.draw(allComponent);
+				st = nd + 1;
+				nd = innerHTML.indexOf(' ', st);
+			}
+		}
+		public DOM_Node getElement(String ID)
+		{
+			return null;
+		}
+	}
+
+	class scriptElement extends nonEmptyElementNode
+	{
+		jsCodeNode rt;
+		public scriptElement(jsCodeNode rt)
+		{
+			this.rt = rt;
+		}
+		public String toString()
+		{
+			return "script";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			rt.exec();
+
+			String htmlBodyCode = "<body>" + rt.toString() + "</body>";
+
+			try {
+				// System.out.println("\n-- start parsing javascript code output");
+				InputStream is = new ByteArrayInputStream(htmlBodyCode.getBytes());
+
+				MiniBrowser parser = new MiniBrowser(is);
+				bodyElement bd = parser.body();
+				bd.draw(allComponent);
+				// System.out.println("-- finished parsing javascript");
+			}
+			catch (Exception e) {
+				System.out.println(e);
+			}
+		}
+	}
+
+	class htmlElement extends nonEmptyElementNode
+	{
+		public String toString()
+		{
+			return "html";
+		}
+	}
+
+	class titleElement extends nonEmptyElementNode
+	{
+		public String toString()
+		{
+			return "title";
+		}
+	}
+
+	class headElement extends nonEmptyElementNode
+	{
+		public String toString()
+		{
+			return "head";
+		}
+	}
+
+	class bodyElement extends nonEmptyElementNode
+	{
+		public String toString()
+		{
+			return "body";
+		}
+	}
+
+	class inputElement extends emptyElementNode
+	{
+		protected final int ctrHeight = 25;
+
+		public String toString()
+		{
+			return "input";
+		}
+		inputElement(){}
+		public void setValue(String val){}
+		public String getValue(){ return "";}
+		public void draw(Vector<Component> allComponent){}
+	}
+
+	class textInputElement extends inputElement
+	{
+		textInputElement() {}
+		textInputElement(inputElement cpy)
+		{
+			this.Attribute.putAll(cpy.Attribute);
+		}
+		public void setValue(String val)
+		{
+			setAttributeValue("value", val);
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					((JTextField)c).setText(val);
+					return ;
+				}
+			}
+		}
+		public String getValue()
+		{
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					return ((JTextField)c).getText();
+				}
+			}
+			return getAttributeValue("value");
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String id = getAttributeValue("id");
+			String value = getAttributeValue("value");
+
+			if (value == null)
+				value = "";
+
+			JTextField text = new JTextField(value);
+			text.setBackground(Color.white);
+			text.setSize(120, ctrHeight);
+			text.setName(id);
+			allComponent.add(text);
+		}
+	}
+	class checkboxInputElement extends inputElement
+	{
+		checkboxInputElement() {}
+		checkboxInputElement(inputElement cpy)
+		{
+			this.Attribute.putAll(cpy.Attribute);
+		}
+		public void setValue(String val)
+		{
+			setAttributeValue("value", val);
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					((JCheckBox)c).setText(val);
+					return ;
+				}
+			}
+		}
+		public String getValue()
+		{
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					return ((JCheckBox)c).getText();
+				}
+			}
+			return getAttributeValue("value");
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String value = getAttributeValue("value");
+			if (value == null)
+				value = "";
+
+			JCheckBox checkbox = new JCheckBox(value);
+			checkbox.setBackground(Color.white);
+			checkbox.setSize(value.length() * 10 + 20, ctrHeight);
+			final String func = getAttributeValue("onclick");
+			if (func != null) {
+				checkbox.addActionListener(new ActionListener() {
+					public void actionPerformed(ActionEvent event) {
+						String fn = func.substring(0, func.length()-2);
+						callFuncNode cf = new callFuncNode(fn);
+						cf.execute();
+				}});
+			}
+			allComponent.add(checkbox);
+		}
+	}
+	class radioInputElement extends inputElement
+	{
+		radioInputElement()	{}
+		radioInputElement(inputElement cpy)
+		{
+			this.Attribute.putAll(cpy.Attribute);
+		}
+		public void setValue(String val)
+		{
+			setAttributeValue("value", val);
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					((JRadioButton)c).setText(val);
+					return ;
+				}
+			}
+		}
+		public String getValue()
+		{
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					return ((JRadioButton)c).getText();
+				}
+			}
+			return getAttributeValue("value");
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String value = getAttributeValue("value");
+			if (value == null)
+				value = "";
+
+			JRadioButton redio = new JRadioButton(value);
+			redio.setBackground(Color.white);
+			redio.setSize(value.length() * 10 + 20, ctrHeight);
+			final String func = getAttributeValue("onclick");
+			if (func != null) {
+				redio.addActionListener(new ActionListener() {
+					public void actionPerformed(ActionEvent event) {
+						String fn = func.substring(0, func.length()-2);
+						callFuncNode cf = new callFuncNode(fn);
+						cf.execute();
+				}});
+			}
+			allComponent.add(redio);
+		}
+	}
+	class buttonInputElement extends inputElement
+	{
+		buttonInputElement() {}
+		buttonInputElement(inputElement cpy)
+		{
+			this.Attribute.putAll(cpy.Attribute);
+		}
+		public void setValue(String val)
+		{
+			setAttributeValue("value", val);
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					((JButton)c).setText(val);
+					return ;
+				}
+			}
+		}
+		public String getValue()
+		{
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					return ((JButton)c).getText();
+				}
+			}
+			return getAttributeValue("value");
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String value = getAttributeValue("value");
+			if (value == null)
+				value = "";
+
+			JButton button = new JButton(value);
+			button.setBackground(Color.white);
+			button.setSize(value.length() * 10 + 20, ctrHeight);
+			final String func = getAttributeValue("onclick");
+			if (func != null) {
+				button.addActionListener(new ActionListener() {
+					public void actionPerformed(ActionEvent event) {
+						int index = func.indexOf('(');
+						String fn = func.substring(0, index);
+						String param = func.substring(index+1, func.length()-1);
+
+						if (param.length() == 0)
+						{
+							callFuncNode cf = new callFuncNode(fn);
+							cf.execute();
+							return;
+						}
+						LinkedList<mathExp> args = new LinkedList<mathExp>();
+
+						param += ',';
+						int st = 0;
+						int nd = param.indexOf(',');
+						while (nd != -1)
+						{
+							String word = param.substring(st, nd);
+							args.add(new Int(Double.parseDouble(word)));
+							st = nd + 1;
+							nd = param.indexOf(',', st);
+						}
+
+						callFuncNode cf = new callFuncNode(fn, args);
+						cf.execute();
+				}});
+			}
+			allComponent.add(button);
+		}
+	}
+
+
+	class selectElement extends nonEmptyElementNode
+	{
+		Vector<TextNode> option = new Vector<TextNode>();
+
+		public void addOption(TextNode op)
+		{
+			option.add(op);
+		}
+		public String toString()
+		{
+			return "select";
+		}
+		public String getValue()
+		{
+			String id = getAttributeValue("id");
+			for (Component c : mainPanel.getComponents())
+			{
+				String name = c.getName();
+				if (name != null && name.equals(id)) {
+					return ((JComboBox)c).getSelectedItem().toString();
+				}
+			};
+			return getAttributeValue("value");
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String id = getAttributeValue("id");
+			String[] opt_str = new String[option.size()];
+			for (int i=0; i<option.size(); i++) {
+				opt_str[i] = option.get(i).toString();
+			}
+      JComboBox<String> combobox = new JComboBox<String>(opt_str);
+			combobox.setSize(100, 20);
+			combobox.setName(id);
+			allComponent.add(combobox);
+		}
+	}
+
+	static public void addEmptyLine(Vector<Component> allComponent)
+	{
+		final int emptyLineHeight = 20;
+		JLabel emptyLbl = new JLabel();
+		emptyLbl.setSize(0, emptyLineHeight);
+		allComponent.add(emptyLbl);
+		allComponent.add(null);
+	}
+
+	class paragraphElement extends nonEmptyElementNode
+	{
+		public String toString()
+		{
+			return "p";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			addEmptyLine(allComponent);
+			super.draw(allComponent);
+			addEmptyLine(allComponent);
+		}
+	}
+
+	class headingElement extends nonEmptyElementNode
+	{
+		private int size = 0;
+
+		public void setSize(int s)
+		{
+			size = s;
+		}
+		public String toString()
+		{
+			return "h" + Integer.toString(size);
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			Format f = new Format(formatStk.peek());
+			f.setStyle('b');
+			f.setSize((7-size)*6);
+
+			addEmptyLine(allComponent);
+			formatStk.push(f);
+			super.draw(allComponent);
+			formatStk.pop();
+			addEmptyLine(allComponent);
+		}
+	}
+
+	class textFormatElement extends nonEmptyElementNode
+	{
+		private char format = ' ';
+
+		public void setFormat(char f)
+		{
+			format = f;
+		}
+		public String toString()
+		{
+			return "" + format;
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			Format f = new Format(formatStk.peek());
+			f.setStyle(format);
+
+			formatStk.push(f);
+			super.draw(allComponent);
+			formatStk.pop();
+		}
+	}
+
+	class fontElement extends nonEmptyElementNode
+	{
+		public String toString()
+		{
+			return "font";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String font = getAttributeValue("face");
+			String size = getAttributeValue("size");
+			String clr = getAttributeValue("color");
+
+			Format f = new Format(formatStk.peek());
+			if (font != null )	f.setFont(font);
+			if (size != null )	f.setSize(size);
+			if (clr != null )	f.setColor(clr);
+
+			formatStk.push(f);
+			super.draw(allComponent);
+			formatStk.pop();
+		}
+	}
+
+	abstract class listElement extends nonEmptyElementNode
+	{
+		protected final String space = "    ";
+		protected LinkedList<listItemElement> items = new LinkedList<listItemElement>();
+		public void addItem(listItemElement item)
+		{
+			items.add(item);
+		}
+	}
+
+	class unorderedListElement extends listElement
+	{
+		public String toString()
+		{
+			return "ul";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			addEmptyLine(allComponent);
+			for (listItemElement li : items)
+			{
+				(new TextNode(space + "* ")).draw(allComponent);
+				li.draw(allComponent);
+				allComponent.add(null);
+			}
+			addEmptyLine(allComponent);
+		}
+	}
+	class orderedListElement extends listElement
+	{
+		public String toString()
+		{
+			return "ol";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			addEmptyLine(allComponent);
+			int c = 1;
+			for (listItemElement li : items)
+			{
+				(new TextNode(space + (c++) + ". ")).draw(allComponent);
+				li.draw(allComponent);
+				allComponent.add(null);
+			}
+			addEmptyLine(allComponent);
+		}
+	}
+	class listItemElement
+	{
+		TextNode text;
+		public listItemElement(TextNode t)
+		{
+			text = t;
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			text.draw(allComponent);
+		}
+	}
+
+	class defListElement extends nonEmptyElementNode
+	{
+		public String toString()
+		{
+			return "dl";
+		}
+		protected final String space = "    ";
+		protected LinkedList<defListItemElement> items = new LinkedList<defListItemElement>();
+		public void addItem(defListItemElement item)
+		{
+			items.add(item);
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			addEmptyLine(allComponent);
+			for (defListItemElement li : items)
+			{
+				li.draw(allComponent);
+				allComponent.add(null);
+			}
+			addEmptyLine(allComponent);
+		}
+	}
+	abstract class defListItemElement
+	{
+		TextNode text;
+		public defListItemElement(TextNode t)
+		{
+			text = t;
+		}
+		abstract public void draw(Vector<Component> allComponent);
+	}
+	class defineListItemElement extends defListItemElement
+	{
+		public defineListItemElement(TextNode t)
+		{
+			super(t);
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			text.draw(allComponent);
+		}
+	}
+	class describeListItemElement extends defListItemElement
+	{
+		public describeListItemElement(TextNode t)
+		{
+			super(t);
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String space = "    ";
+			(new TextNode(space + space)).draw(allComponent);
+			text.draw(allComponent);
+		}
+	}
+
+	class tableElement extends nonEmptyElementNode
+	{
+		Vector<tableRowElement> rows = new Vector<tableRowElement>();
+
+		public void addRow(tableRowElement row)
+		{
+			rows.add(row);
+		}
+		public String toString()
+		{
+			return "table";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			Vector<String> head = new Vector<String>();
+			Vector<Vector<String>> data = new Vector<Vector<String>>();
+
+			int columnCount = 0;
+			for (tableRowElement tr : rows)
+			{
+				Vector<String> temp = new Vector<String>();
+				for (DOM_Node n : tr.data)
+				{
+					temp.add(((TextNode)n).toString());
+				}
+				data.add(temp);
+				columnCount = Math.max(columnCount, temp.size());
+			}
+			for (int i=0; i<columnCount; i++)
+				head.add("dummy");
+
+			JTable table = new JTable(data, head);
+
+			String border = getAttributeValue("border");
+			if (border == null)
+				border = "1";
+			int brd = 1;
+			try {
+				brd = Integer.parseInt(border);
+			} catch (NumberFormatException ex) {
+				brd = 1;
+				notIntegerValue("border");
+				System.out.println("border attribute NOT an integer");
+			}
+			table.setBorder(BorderFactory.createLineBorder(Color.black, brd));
+
+			int colWidth = 100;
+			int rowHeight = 25;
+			table.setSize(colWidth * columnCount, rowHeight * data.size());
+			table.setRowHeight(rowHeight);
+
+			allComponent.add(table);
+		}
+	}
+
+	class tableRowElement
+	{
+		boolean header = false;
+		Vector<DOM_Node> data = new Vector<DOM_Node>();
+		public void addData(DOM_Node d)
+		{
+			data.add(d);
+		}
+	}
+
+	class anchorElement extends nonEmptyElementNode
+	{
+		TextNode text;
+		public anchorElement(TextNode t)
+		{
+			text = t;
+		}
+		public String toString()
+		{
+			return "a";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String href = getAttributeValue("href");
+			if (href == null){
+				if (getFirstChild() != null)
+					getFirstChild().draw(allComponent);
+				return;
+			}
+			String text = ((TextNode)getFirstChild()).toString();
+			String st = "<html><body><a href=\"";
+			String nd = "</a></body></html>";
+			String site = st + href + "\">" + text + nd;
+			JLabel url = new JLabel(site);
+			url.setEnabled(true);
+			url.setCursor(new Cursor(Cursor.HAND_CURSOR));
+			url.setSize(text.toString().length() * 5,20);
+			allComponent.add(url);
+		}
+	}
+
+	class imgElement extends emptyElementNode
+	{
+		public String toString()
+		{
+			return "img";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			String imgName = getAttributeValue("src");
+			String altName = getAttributeValue("alt");
+
+			if (imgName == null)
+				imgName = "";
+
+			String cd = System.getProperty("user.dir") + "/";
+			 cd = "data/";
+
+			try {
+				Image myPicture = ImageIO.read(new File(cd + imgName));
+				int h = myPicture.getHeight(mainPanel);
+				int w = myPicture.getWidth(mainPanel);
+				//myPicture = myPicture.getScaledInstance(80, 200, -1);
+				JLabel img = new JLabel(new ImageIcon( myPicture ));
+				img.setSize(w,h);
+				allComponent.add(img);
+      }
+			catch(Exception e)
+			{
+				if (altName != null)
+				{
+					TextNode altText = new TextNode(altName);
+					altText.draw(allComponent);
+				}
+				else
+				{
+					imgElement altImg = new imgElement();
+					altImg.setAttributeValue("src", "altPhoto.jpg");
+					altImg.draw(allComponent);
+				}
+			}
+		}
+	}
+
+	class breakElement extends emptyElementNode
+	{
+		public String toString()
+		{
+			return "br";
+		}
+		public void draw(Vector<Component> allComponent)
+		{
+			addEmptyLine(allComponent);
+		}
+	}
+
+
+	/** jsCode Node */
+
+	class jsCodeNode
+	{
+		private stmNode stm;
+		private jsCodeNode next = null;
+
+		public jsCodeNode next()
+		{
+			return next;
+		}
+		public stmNode stm()
+		{
+			return stm;
+		}
+		public void init()
+		{
+			stm = null;
+			next = null;
+		}
+		public void addStm(stmNode stm)
+		{
+			this.stm = stm;
+			next = new jsCodeNode();
+		}
+		public void exec()
+		{
+			if (next != null)
+			{
+				stm.exec();
+				if (returnFlag)
+					return;
+				next.exec();
+			}
+		}
+
+		public String toString()
+		{
+			String res = "";
+			if (next != null)
+			{
+				String s = stm.toString();
+				String d = next.toString();
+				return s + d;
+			}
+			return "";
+		}
+	}
+
+	/**	Statement Node */
+
+	interface stmNode
+	{
+		public void exec();
+		public String toString();
+	}
+
+	class forNode implements stmNode
+	{
+		private jsCodeNode body;
+		private mathExp E1, E2, E3;
+
+		public forNode(mathExp e1, mathExp e2, mathExp e3, jsCodeNode body)
+		{
+			E1 = e1;
+			E2 = e2;
+			E3 = e3;
+			this.body = body;
+		}
+		public void exec()
+		{
+			if (E1 != null)
+				E1.eval();
+			for (; ( E2 == null? true : E2.eval() != 0) ;)
+			{
+				body.exec();
+				if (E3 != null)
+					E3.eval();
+			}
+		}
+	}
+
+	class whileNode implements stmNode
+	{
+		private mathExp cond;
+		private jsCodeNode body;
+
+		public whileNode(mathExp e, jsCodeNode body)
+		{
+			cond = e;
+			this.body = body;
+		}
+		public void exec()
+		{
+			while (cond.eval() != 0)
+			{
+				body.exec();
+			}
+		}
+	}
+
+	class doWhileNode implements stmNode
+	{
+		private mathExp cond;
+		private jsCodeNode body;
+
+		public doWhileNode(mathExp e, jsCodeNode body)
+		{
+			cond = e;
+			this.body = body;
+		}
+		public void exec()
+		{
+			do
+			{
+				body.exec();
+			}
+			while (cond.eval() != 0);
+		}
+	}
+
+	class ifNode implements stmNode
+	{
+		private mathExp cond;
+		private jsCodeNode thenBody;
+		private jsCodeNode elseBody;
+
+		public ifNode(mathExp e, jsCodeNode tBody, jsCodeNode eBody)
+		{
+			cond = e;
+			thenBody = tBody;
+			elseBody = eBody;
+		}
+		public void exec()
+		{
+			if (cond.eval() != 0)
+			{
+				thenBody.exec();
+			}
+			else
+			{
+				if (elseBody != null)
+					elseBody.exec();
+			}
+		}
+	}
+
+	class switchNode implements stmNode
+	{
+		private String id;
+		private jsCodeNode defaultCase;
+		private List<caseNode> caseList;
+
+		public switchNode(String var, List<caseNode> l, jsCodeNode df)
+		{
+			id = var;
+			caseList = l;
+			defaultCase = df;
+		}
+		public void exec()
+		{
+			boolean b = false, breaK = false;
+			int val = (int)Double.parseDouble(varsInUse.get(id));
+			for (caseNode cn : caseList)
+			{
+				if (!b){
+					if (cn.getLabel() == val)
+					{
+						cn.exec();
+						b = true;
+						breaK = cn.hasBreak();
+					}
+				} else {
+					if (breaK || returnFlag)
+						return ;
+					cn.exec();
+					breaK = cn.hasBreak();
+				}
+			}
+			if (defaultCase != null)
+				defaultCase.exec();
+		}
+	}
+
+	class caseNode
+	{
+		private int label;
+		private boolean brk;
+		private jsCodeNode body;
+
+		public caseNode(int l, jsCodeNode b, boolean br)
+		{
+			label = l;
+			brk = br;
+			body = b;
+		}
+		public int getLabel()
+		{
+			return label;
+		}
+		public boolean hasBreak()
+		{
+			return brk;
+		}
+		public void exec()
+		{
+			body.exec();
+		}
+	}
+
+	class writeNode implements stmNode
+	{
+		private boolean newLine;
+		private List<Expression> list;
+
+		public writeNode(List<Expression> l, boolean nl)
+		{
+			list = l;
+			newLine = nl;
+		}
+		private String getContent()
+		{
+			String out = "";
+			for (Expression ex : list)
+				out += ex.toString();
+			return (out + (newLine ? "\n" : ""));
+		}
+
+		public void exec()
+		{
+			// System.out.print(getContent());
+		}
+		public String toString()
+		{
+			return getContent();
+		}
+	}
+
+	class alertNode implements stmNode
+	{
+		private List<Expression> list;
+
+		public alertNode(List<Expression> l)
+		{
+			list = l;
+		}
+		public void exec()
+		{
+			String out = "";
+			for (Expression ex : list)
+				out += ex.toString();
+			//System.out.print(out);
+			JOptionPane.showMessageDialog(null, out);
+		}
+	}
+
+	class returnNode implements stmNode
+	{
+		private Expression ret;
+		public returnNode(Expression e)
+		{
+			ret = e;
+		}
+		public void exec()
+		{
+			returnValue = ret.toString();
+			returnFlag = true;
+		}
+	}
+
+	class assigneNode extends mathExp implements Expression, stmNode
+	{
+		private Expression val;
+		private String var;
+
+		public assigneNode(String name, Expression e)
+		{
+			val = e;
+			var = name;
+		}
+		public void exec()
+		{
+			varsInUse.put(var, val.toString());
+		}
+		@Override public String toString()
+		{
+			exec();
+			return varsInUse.get(var);
+		}
+		@Override public double eval()
+		{
+			exec();
+			return Double.parseDouble( varsInUse.get(var) );
+		}
+	}
+
+	class assigneDOM_Node extends mathExp implements Expression, stmNode
+	{
+		private Expression val;
+		private String ID;
+
+		public assigneDOM_Node(String id, Expression e)
+		{
+			val = e;
+			ID = id;
+		}
+		public void exec()
+		{
+			DOM_Node n = root.getElement(ID);
+			((inputElement)n).setValue(val.toString());
+		}
+		@Override public String toString()
+		{
+			exec();
+			return "";
+		}
+		@Override public double eval()
+		{
+			exec();
+			return 0;
+		}
+	}
+
+	class callFuncNode extends mathExp implements Expression, stmNode
+	{
+		private String Fname;
+		private List<mathExp> args;
+
+		public callFuncNode(String name)
+		{
+			this(name, new LinkedList<mathExp>());
+		}
+		public callFuncNode(String name, List<mathExp> args)
+		{
+			Fname = name;
+			this.args = args;
+		}
+		private void execute()
+		{
+			funcNode FN = functions.get(Fname);
+
+			if (FN == null)
+			{
+				System.out.println("Compilation Error : Function (" + Fname + ") Not Declared");
+				return ;
+			}
+
+			HashMap<String,String> nextMap = new HashMap<String,String>();
+			List<String> params = FN.getParameters();
+			int index = 0;
+
+			for (String p : params)
+			{
+				if (index == args.size())
+				{
+					nextMap.put(p, null);
+				}
+				else
+				{
+					nextMap.put(p, Double.toString(args.get(index).eval()));
+					index++;
+				}
+			}
+
+			ST.push(varsInUse);
+			varsInUse = nextMap;
+			FN.exec();
+			varsInUse = ST.pop();
+		}
+		public void exec()
+		{
+			execute();
+			returnFlag = false;
+		}
+		@Override public String toString()
+		{
+			execute();
+			if (returnFlag)
+			{
+				returnFlag = false;
+				return returnValue;
+			}
+			return "";
+		}
+		@Override public double eval()
+		{
+			execute();
+			if (returnFlag)
+			{
+				returnFlag = false;
+				return Double.parseDouble(returnValue);
+			}
+			return 0;
+		}
+	}
+
+	/** Functions Info (Parameters & Body) */
+
+	class funcNode
+	{
+		private List<String> params;
+		private jsCodeNode body;
+		public funcNode(List<String> params, jsCodeNode body)
+		{
+			this.params = params;
+			this.body = body;
+		}
+		public List<String> getParameters()
+		{
+			return params;
+		}
+		public void exec()
+		{
+			returnFlag = false;
+			body.exec();
+		}
+	}
+
+	/**	Expression */
+
+	interface Expression
+	{
+		public double eval();
+		public String toString();
+	}
+
+	class StringExp implements Expression
+	{
+		private String string;
+		public StringExp(String s)
+		{
+			string = s;
+		}
+		@Override public String toString()
+		{
+			return string;
+		}
+		@Override public double eval()
+		{
+			return 0;
+		}
+	}
+
+	abstract class mathExp implements Expression
+	{
+		@Override public String toString()
+		{
+			return Integer.toString((int)eval());
+		}
+	}
+
+	abstract class BinaryOpration extends mathExp {
+		mathExp left, right;
+		BinaryOpration(mathExp l, mathExp r)
+		{
+			left = l;
+			right = r;
+		}
+	}
+
+	class Plus extends BinaryOpration
+	{
+		public Plus(mathExp l, mathExp r)
+		{
+			super(l, r);
+		}
+		public double eval()
+		{
+			return left.eval() + right.eval();
+		}
+	}
+	class Minus extends BinaryOpration
+	{
+		public Minus(mathExp l, mathExp r)
+		{
+			super(l, r);
+		}
+		public double eval()
+		{
+			return left.eval() - right.eval();
+		}
+	}
+	class unaryMinus extends mathExp
+	{
+		private mathExp term;
+		public unaryMinus(mathExp n)
+		{
+			term = n;
+		}
+		public double eval()
+		{
+			return - term.eval();
+		}
+	}
+	class increase extends mathExp
+	{
+		private String name;
+		public increase(String s)
+		{
+			name = s;
+		}
+		public double eval()
+		{
+			double currentValue =  Double.parseDouble(varsInUse.get(name));
+			double newValue = currentValue + 1;
+			varsInUse.put(name, Double.toString(newValue));
+			return newValue;
+		}
+	}
+	class decrease extends mathExp
+	{
+		private String name;
+		public decrease(String s)
+		{
+			name = s;
+		}
+		public double eval()
+		{
+			double currentValue =  Double.parseDouble(varsInUse.get(name));
+			double newValue = currentValue - 1;
+			varsInUse.put(name, Double.toString(newValue));
+			return newValue;
+		}
+	}
+	class Mult extends BinaryOpration
+	{
+		public Mult(mathExp l, mathExp r)
+		{
+			super(l, r);
+		}
+		public double eval()
+		{
+			return left.eval() * right.eval();
+		}
+	}
+	class Div extends BinaryOpration
+	{
+		public Div(mathExp l, mathExp r)
+		{
+			super(l, r);
+		}
+		public double eval()
+		{
+			return left.eval() / right.eval();
+		}
+	}
+	class Mod extends BinaryOpration
+	{
+		public Mod(mathExp l, mathExp r)
+		{
+			super(l, r);
+		}
+		public double eval()
+		{
+			return left.eval() % right.eval();
+		}
+	}
+	class Power extends mathExp
+	{
+		private mathExp exp;
+		public Power(mathExp e)
+		{
+			exp = e;
+		}
+		public double eval()
+		{
+			return Math.pow(exp.eval(), 2.0);
+		}
+	}
+	class Int extends mathExp
+	{
+		private double val;
+		public Int(double n)
+		{
+			val = n;
+		}
+		public double eval()
+		{
+			return val;
+		}
+	}
+	class Var extends mathExp
+	{
+		private String name;
+		public Var(String s)
+		{
+			name = s;
+		}
+		public double eval()
+		{
+			return Double.parseDouble(varsInUse.get(name));
+		}
+		@Override public String toString()
+		{
+			return varsInUse.get(name);
+		}
+	}
+
+	class getElementNode extends mathExp
+	{
+		private String ID;
+		public getElementNode(String id)
+		{
+			ID = id;
+		}
+		private String getValueStr()
+		{
+			DOM_Node n = root.getElement(ID);
+			if (n == null) {
+				System.out.println("element with id = " + ID + " not found");
+				return null;
+			}
+			return n.getValue();
+		}
+		@Override public double eval()
+		{
+			String value = getValueStr();
+			if (value == null)
+				return 0;
+			try {
+				return Double.parseDouble(value);
+			} catch (Exception e) {
+				JOptionPane.showMessageDialog(null, "pleaze enter a number, not text");
+				return 0;
+			}
+		}
+		@Override public String toString()
+		{
+			return getValueStr();
+		}
+	}
+
+	class Or extends BinaryOpration
+	{
+		public Or(mathExp l, mathExp r)
+		{
+			super(l, r);
+		}
+		public double eval()
+		{
+			return (left.eval() != 0 || right.eval() != 0) ? 1 : 0;
+		}
+	}
+	class And extends BinaryOpration
+	{
+		public And(mathExp l, mathExp r)
+		{
+			super(l, r);
+		}
+		public double eval()
+		{
+			return (left.eval() != 0 && right.eval() != 0) ? 1 : 0;
+		}
+	}
+	class Not extends mathExp
+	{
+		private mathExp child;
+		public Not(mathExp n)
+		{
+			child = n;
+		}
+		public double eval()
+		{
+			return (child.eval() == 0 ? 1 : 0);
+		}
+	}
+	class Bool extends mathExp
+	{
+		private boolean val;
+		public Bool(boolean b)
+		{
+			val = b;
+		}
+		public double eval()
+		{
+			return (val ? 1 : 0);
+		}
+	}
+	class CompOp extends BinaryOpration
+	{
+		private String op;
+		public CompOp(mathExp l, mathExp r, String op)
+		{
+			super(l, r);
+			this.op = op;
+		}
+		public double eval()
+		{
+			double e1 = left.eval();
+			double e2 = right.eval();
+			if (op.equals("=="))	return e1 == e2 ? 1 : 0;
+			if (op.equals("!="))	return e1 != e2 ? 1 : 0;
+			if (op.equals(">"))		return e1 > e2 ? 1 : 0;
+			if (op.equals("<"))		return e1 < e2 ? 1 : 0;
+			if (op.equals(">="))	return e1 >= e2 ? 1 : 0;
+			if (op.equals("<="))	return e1 <= e2 ? 1 : 0;
+			return 0;
+		}
+	}
+
+	//	Helper Functions
+
+	public String getStringContent(String s)
+	{
+		return s.substring(1, s.length() - 1);
+	}
+
+	public double getVariableValue(String v)
+	{
+		String s = varsInUse.get(v);
+		if (s == null)
+			return 0;
+		return Integer.parseInt(s);
+	}
+
+	static int peCount = 0;
+	void printParseException(ParseException pe)
+	{
+		System.out.println("\nParse Exception #" + (++peCount) + ":");
+		System.out.println("- @ line: " + pe.currentToken.next.beginLine);
+		System.out.println("- @ Column: " + pe.currentToken.next.beginColumn);
+		System.out.println("- Encountered: " + pe.currentToken.next.image);
+		System.out.println("- " + pe.toString().substring(pe.toString().indexOf("Was")));
+		/*System.out.println("\nParse Exception #" + (++peCount) + " :");
+		System.out.println(pe.toString());*/
+	}
+
+	void notIntegerValue(String att)
+	{
+		System.out.print("\nNumber Format Exception: ");
+		System.out.println("'" + att + "'" +" attribute NOT an integer");
+	}
+	void badColorException(String clr)
+	{
+		System.out.print("\nColor Format Exception: ");
+		System.out.println("'" + clr + "'" +" attribute NOT a valid color");
+	}
+
+	static int wCount = 0;
+	void printWarningCount() {
+			System.out.print("\nWarning #" + (++wCount) + ": ");
+	}
+	void missingEndTag(ParseException pe, String ET)
+	{
+		printWarningCount();
+		System.out.print("missing end tag </" + ET + ">");
+		System.out.print("\t@(line, column) (" + pe.currentToken.next.beginLine);
+		System.out.println(", " + pe.currentToken.next.beginColumn + ")");
+	}
+	void wrongAttName(String att)
+	{
+		printWarningCount();
+		System.out.print("wrong attribute name \"" + att + "\"");
+		System.out.println("\t@(line, column) (" + token.beginLine + ", " + token.beginColumn + ")");
+	}
+	void attributesError(String tag)
+	{
+		printWarningCount();
+		System.out.println("an error occured while parsing the attributes of tag <" + tag + ">");
+		System.out.println("\t@(line, column) (" + token.beginLine + ", " + token.beginColumn + ")");
+	}
+	void wrongCloseEmptyTag(emptyElementNode n)
+	{
+		printWarningCount();
+		System.out.println("empty tags (" + n.toString() + ") close with '/>' NOT '>'");
+		System.out.println("\t@(line, column) (" + token.beginLine + ", " + token.beginColumn + ")");
+	}
+	void missingTitleTag()
+	{
+		printWarningCount();
+		System.out.println("No Title!! missing title tag");
+	}
+	void headingMismatch()
+	{
+		printWarningCount();
+		System.out.print("heading size mismatch");
+		System.out.println("\t@(line, column) (" + token.beginLine + ", " + token.beginColumn + ")");
+	}
+}
+PARSER_END(MiniBrowser)
+
+
+SKIP : {
+	< [" ","\t","\n","\r"] >
+|	< "<!--" > :COMMENT
+}
+
+<TAGS>
+SKIP : { < [" ","\t","\n","\r"] > }
+
+<TAGS> TOKEN :
+{	<GT: ">"> :DEFAULT
+|	<SGT: "/>"> :DEFAULT
+|	<QUOTE: "\"">
+|	<ASSIGN: "=">
+|	<STRINGS: <QUOTE> (~["\""])* <QUOTE> >
+}
+
+TOKEN :	//	Start Tags
+{
+	<SHTML: 	"<html">  :TAGS
+|	<SHEAD: 	"<head"> :TAGS
+|	<SBODY: 	"<body"> :TAGS
+|	<STITLE: 	"<title"> :TAGS
+
+|	<SH: 		"<h"["1"-"6"]> :TAGS
+|	<SP: 		"<p"> :TAGS
+|	<SB: 		"<b"> :TAGS
+|	<SI: 		"<i"> :TAGS
+|  	<SU:		"<u"> :TAGS
+|	<SFONT: 	"<font"> :TAGS
+|	<SA: 		"<a"> :TAGS
+
+|	<SUL: 		"<ul"> :TAGS
+|	<SOL: 		"<ol"> :TAGS
+|	<SLI: 		"<li"> :TAGS
+
+|	<SDL: 		"<dl"> :TAGS
+|	<SDT: 		"<dt"> :TAGS
+|	<SDD: 		"<dd"> :TAGS
+
+|	<STABLE: 	"<table"> :TAGS
+|	<STR: 		"<tr"> :TAGS
+|	<STH: 		"<th"> :TAGS
+|	<STD: 		"<td"> :TAGS
+
+|	<SSELECT: 	"<select"> :TAGS
+|	<SOPTION: 	"<option"> :TAGS
+}
+
+TOKEN :	//	End Tags
+{
+	<EHTML: 	"</html"> :TAGS
+|	<EHEAD: 	"</head"> :TAGS
+|	<EBODY: 	"</body"> :TAGS
+|	<ETITLE: 	"</title"> :TAGS
+//|	<SCRIPT:	"script"> //:JS
+|	<SCRIPT:	"<script type=\"text/javascript\">"> :JS
+
+|	<EH: 		"</h"["1"-"6"]> :TAGS
+|	<EP: 		"</p"> :TAGS
+|	<EB: 		"</b"> :TAGS
+|	<EI: 		"</i"> :TAGS
+|  	<EU:		"</u"> :TAGS
+|	<EFONT: 	"</font"> :TAGS
+|	<EA: 		"</a"> :TAGS
+
+|	<EUL: 		"</ul"> :TAGS
+|	<EOL: 		"</ol"> :TAGS
+|	<ELI: 		"</li"> :TAGS
+
+|	<EDL: 		"</dl"> :TAGS
+|	<EDT: 		"</dt"> :TAGS
+|	<EDD: 		"</dd"> :TAGS
+
+|	<ETABLE: 	"</table"> :TAGS
+|	<ETR: 		"</tr"> :TAGS
+|	<ETH: 		"</th"> :TAGS
+|	<ETD: 		"</td"> :TAGS
+
+|	<ESELECT: 	"</select"> :TAGS
+|	<EOPTION: 	"</option"> :TAGS
+}
+
+TOKEN :	//	Empty Tags
+{
+	<BR: 		"<br"> :TAGS
+|	<HR:		"<hr"> :TAGS
+|	<IMG: 		"<img"> :TAGS
+|	<INPUT: 	"<input"> :TAGS
+}
+
+<TAGS> TOKEN :	//	Attributes
+{
+	<ID: 			"id">
+
+|	<INPUT_ATT: 	"type" | "value" | "onclick" >
+|	<FONT_ATT: 		"face" | "color" | "size" >
+|	<IMG_ATT: 		"src"  | "alt" >
+|	<BODY_ATT: 		"bgcolor" >
+|	<A_ATT: 		"href" >
+|	<TABLE_ATT:		"border" >
+}
+
+<TAGS> TOKEN :
+{
+	<ATTNAME: ( ["a"-"z"] )+ >
+|	<OTHER: ["1"-"9","A"-"Z"] (~[" ","\n",">"])+ >
+}
+
+TOKEN :
+{
+	<WORD: ( ~["<"," ","\t","\n","\r"] )+ >
+}
+<COMMENT> SKIP :
+{
+	< "-->" > :DEFAULT
+|	< ~[] >
+}
+
+//	JavaScript Token
+
+<JS> SKIP : { <[" ","\t","\n","\r"]> }
+
+<JS> TOKEN : { < IF : "if" > }
+<JS> TOKEN : { < ELSE : "else" > }
+<JS> TOKEN : { < FOR : "for" > }
+<JS> TOKEN : { < DO : "do" > }
+<JS> TOKEN : { < WHILE : "while" > }
+<JS> TOKEN : { < SWITCH : "switch" > }
+<JS> TOKEN : { < CASE : "case" > }
+<JS> TOKEN : { < BREAK : "break" > }
+<JS> TOKEN : { < SWITCH_DEFAULT : "default" > }
+<JS> TOKEN : { < FUN : "function" > }
+<JS> TOKEN : { < RETURN : "return" > }
+
+<JS> TOKEN : { < VAR : "var" > }
+
+<JS> TOKEN : { < DOC : "document" > }
+<JS> TOKEN : { < DOC_WRITE : "write" > }
+<JS> TOKEN : { < DOC_WRITELN : "writeln" > }
+<JS> TOKEN : { < DOC_GETELEM : "getElementById" > }
+
+<JS> TOKEN : { < VALUE : "value" > }
+<JS> TOKEN : { < ALERT : "alert" > }
+
+<JS> TOKEN : { < BOOL : "true" | "false" > }
+
+<JS> TOKEN : { < PLUS : "+" > }
+<JS> TOKEN : { < MINUS : "-" > }
+<JS> TOKEN : { < MULT : "*" > }
+<JS> TOKEN : { < DIV : "/" > }
+<JS> TOKEN : { < MOD : "%" > }
+<JS> TOKEN : { < INC : "++" > }
+<JS> TOKEN : { < DEC : "--" > }
+
+<JS> TOKEN : { < SQR : "sqr" > }
+
+<JS> TOKEN : { < DOT : "." > }
+<JS> TOKEN : { < COMMA : "," > }
+<JS> TOKEN : { < COLON : ":" > }
+<JS> TOKEN : { < ASSIGNE : "=" > }
+<JS> TOKEN : { < DBL_QUOT : "\"" > }
+<JS> TOKEN : { < SEMI_COLON : ";" > }
+<JS> TOKEN : { < QUESTION_MARK : "?" > }
+
+<JS> TOKEN : { < OPEN_ROUND_BRACKET : "(" > }
+<JS> TOKEN : { < CLOSE_ROUND_BRACKET : ")" > }
+<JS> TOKEN : { < OPEN_CURLY_BRACKET : "{" > }
+<JS> TOKEN : { < CLOSE_CURLY_BRACKET : "}" > }
+<JS> TOKEN : { < OPEN_SQUARE_BRACKET : "[" > }
+<JS> TOKEN : { < CLOSE_SQUARE_BRACKET : "]" > }
+
+<JS> TOKEN : { < NOT : "!" > }
+<JS> TOKEN : { < OR : "||" > }
+<JS> TOKEN : { < AND : "&&" > }
+<JS> TOKEN : { < COMP_OP : "==" | "!=" | "<" | ">" | "<=" | ">=" > }
+
+<JS> TOKEN : { < INTEGER : (["0"-"9"])+ ("."(["0"-"9"])+)?  > }
+<JS> TOKEN : { < STRING : <DBL_QUOT> (~["\""])* <DBL_QUOT> > }
+
+<JS> TOKEN : { < IDENTIFIER : ["a"-"z","A"-"Z","_"] ( ["a"-"z","A"-"Z","_","0"-"9"] )* >  }
+
+
+<JS> MORE : { "/*": IN_COMMENT }
+< IN_COMMENT > MORE : { < ~[] > }
+< IN_COMMENT > SKIP : { "*/" : JS }
+
+<JS> MORE : { "//": IN_SINGLE_LINE_COMMENT }
+< IN_SINGLE_LINE_COMMENT > SPECIAL_TOKEN : { < SINGLE_LINE_COMMENT: "\n"|"\r"|"\r\n" > : JS }
+< IN_SINGLE_LINE_COMMENT > MORE : { < ~[] > }
+
+
+SKIP : { <[" ","\t","\n","\r"]> }
+<JS> SKIP : { "</script" : TAGS }
+
+
+
+////////////////////////////////////////////
+//	html rules
+
+TextNode innerHTML():
+{
+	Token t;
+}
+{
+	t = <WORD> { return new TextNode(t.image); }
+}
+TextNode innerHTMLtext():
+{
+	Token t;
+	String s = "";
+}
+{
+	(t = <WORD> { s += t.image + " "; } )* { return new TextNode(s); }
+}
+
+htmlElement html() :
+{
+	headElement he;
+	bodyElement be;
+	htmlElement rt = new htmlElement();
+}
+{
+	<SHTML> <GT>
+		he = head()
+		be = body()
+	try
+	{
+		<EHTML> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "html");
+	}
+	finally
+	{
+		rt.addChild(he);
+		rt.addChild(be);
+		return rt;
+	}
+}
+
+headElement head() :
+{
+	titleElement te = null;
+	headElement he = new headElement();
+}
+{
+	<SHEAD> <GT>
+	try
+	{
+		te = title()
+	}
+	catch (ParseException pe)
+	{
+		missingTitleTag();
+		te = new titleElement();
+		te.addChild(new TextNode("untitled"));
+	}
+	try
+	{
+		<EHEAD> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "head");
+	}
+	finally
+	{
+		he.addChild(te);
+		return he;
+	}
+}
+
+titleElement title() :
+{
+	TextNode tn;
+	titleElement te = new titleElement();
+}
+{
+	<STITLE> <GT> tn = innerHTMLtext()
+	try
+	{
+		<ETITLE> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "title");
+	}
+	finally
+	{
+		te.addChild(tn);
+		return te;
+	}
+}
+
+bodyElement body() :
+{
+	bodyElement be = new bodyElement();
+}
+{
+	try
+	{
+		<SBODY> bodyAttribute(be) <GT>
+	}
+	catch(ParseException pe)
+	{
+		attributesError("body");
+		recover2GT();
+	}
+		addChildrenTags(be)
+	try
+	{
+		<EBODY> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "body");
+	}
+	finally
+	{
+		return be;
+	}
+}
+
+void addChildrenTags(nonEmptyElementNode n) :
+{
+	DOM_Node child;
+}
+{
+	( child = bodyContent() { if (child != null) n.addChild(child); } )*
+}
+
+DOM_Node bodyContent() :
+{
+	DOM_Node n;
+}
+{
+	try
+	{
+		( n = emptyElements() | n = nonEmptyElements() ) { return n; }
+		|
+		n = innerHTML() { return n; }
+	}
+	catch (ParseException pe)
+	{
+		System.out.println("ParseException in the body");
+		return null;
+	}
+}
+
+emptyElementNode emptyElements() :
+{
+	emptyElementNode n = null;
+}
+{
+	(
+		<INPUT> { n = new inputElement(); } inputAttribute(n)
+		{
+			String type = n.getAttributeValue("type");
+			if (type == null)
+				type = "text";
+			if (type.equals("button"))
+				n = new buttonInputElement((inputElement)n);
+			else if (type.equals("radio"))
+				n = new radioInputElement((inputElement)n);
+			else if (type.equals("checkbox"))
+				n = new checkboxInputElement((inputElement)n);
+			else
+				n = new textInputElement((inputElement)n);
+		}
+		|
+		<IMG> { n = new imgElement(); } imageAttribute((imgElement)n)
+		|
+		<HR> | <BR> { n = new breakElement(); }
+	)
+	( <SGT> | <GT> {wrongCloseEmptyTag(n);} ) { return n; }
+}
+
+nonEmptyElementNode nonEmptyElements() :
+{
+	nonEmptyElementNode n = null;
+}
+{
+	try
+	{
+		( n = heading() | n = paragraph() | n = textFormat()
+		| n = font() | n = anchor() | n = listT() | n = table()
+		| n = script() | n = defList() | n = select() )
+	}
+	catch(ParseException pe)
+	{
+		System.out.println(pe);
+	}
+	finally
+	{
+		return n;
+	}
+}
+
+scriptElement script() : {}
+{
+	<SCRIPT> javaScriptCode() <GT> { return new scriptElement(parseTree); }
+}
+
+headingElement heading() :
+{
+	Token t1, t2;
+	headingElement he = new headingElement();
+}
+{
+	t1 = <SH> { he.setSize(t1.image.charAt(2) - '0'); } <GT>
+		addChildrenTags(he)
+	try
+	{
+		t2 = <EH> <GT>
+		{ if (t1.image.charAt(2) != t2.image.charAt(3))
+			headingMismatch(); }
+	}
+	catch(ParseException pe)
+	{
+		missingEndTag(pe, "h");
+	}
+	finally
+	{
+		return he;
+	}
+}
+
+paragraphElement paragraph() :
+{
+	paragraphElement pare = new paragraphElement();
+}
+{
+	<SP> <GT>
+		addChildrenTags(pare)
+	try
+	{
+		<EP> <GT>
+	}
+	catch(ParseException pe)
+	{
+		missingEndTag(pe, "p");
+	}
+	finally
+	{
+		return pare;
+	}
+}
+
+textFormatElement textFormat() :
+{
+	textFormatElement tfe = new textFormatElement();
+}
+{
+	(
+		<SB> { tfe.setFormat('b'); } <GT>
+			addChildrenTags(tfe)
+		try
+		{
+			<EB> <GT>
+		}
+		catch(ParseException pe)
+		{
+			missingEndTag(pe, "b");
+		}
+		finally
+		{
+			return tfe;
+		}
+	|
+		<SI> { tfe.setFormat('i'); } <GT>
+			addChildrenTags(tfe)
+		try
+		{
+			<EI> <GT>
+		}
+		catch(ParseException pe)
+		{
+			missingEndTag(pe, "i");
+		}
+		finally
+		{
+			return tfe;
+		}
+	|
+		<SU> { tfe.setFormat('u'); } <GT>
+			addChildrenTags(tfe)
+		try
+		{
+			<EU> <GT>
+		}
+		catch(ParseException pe)
+		{
+			missingEndTag(pe, "u");
+		}
+		finally
+		{
+			return tfe;
+		}
+	)
+}
+
+fontElement font():
+{
+	fontElement fe = new fontElement();
+}
+{
+	try
+	{
+		<SFONT> fontAttribute(fe) <GT>
+	}
+	catch(ParseException pe)
+	{
+		attributesError("font");
+		recover2GT();
+	}
+		addChildrenTags(fe)
+	try
+	{
+		<EFONT> <GT>
+	}
+	catch(ParseException pe)
+	{
+		missingEndTag(pe, "font");
+	}
+	finally
+	{
+		return fe;
+	}
+}
+
+anchorElement anchor() :
+{
+	TextNode tn;
+	anchorElement ae = new anchorElement(null);
+}
+{
+	try
+	{
+		<SA> anchorAttribute(ae) <GT>
+	}
+	catch(ParseException pe)
+	{
+		attributesError("a");
+		recover2GT();
+	}
+		tn = innerHTMLtext() { ae.addChild(tn); }
+	try
+	{
+		<EA> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "a");
+	}
+	finally
+	{
+		return ae;
+	}
+}
+
+listElement listT() :
+{
+	listElement le = null;
+	listItemElement li;
+}
+{
+	(
+		<SUL> { le = new unorderedListElement(); } <GT>
+			( li = listItem() { le.addItem(li); } )*
+		try
+		{
+			<EUL> <GT>
+		}
+		catch (ParseException pe)
+		{
+			missingEndTag(pe, "ul");
+		}
+		finally
+		{
+			return le;
+		}
+	|
+		<SOL> { le = new orderedListElement(); } <GT>
+			( li = listItem() { le.addItem(li); } )*
+		try
+		{
+			<EOL> <GT>
+		}
+		catch (ParseException pe)
+		{
+			missingEndTag(pe, "ol");
+		}
+		finally
+		{
+			return le;
+		}
+	)
+}
+listItemElement listItem() :
+{
+	TextNode tn;
+}
+{
+	<SLI> <GT> tn = innerHTMLtext() <ELI> <GT> { return new listItemElement(tn); }
+}
+
+defListElement defList() :
+{
+	defListElement dle = new defListElement();
+	defListItemElement item;
+}
+{
+	<SDL> <GT>
+		( item = defListItem() { dle.addItem(item); } )*
+	try
+	{
+		<EDL> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "dl");
+	}
+	finally
+	{
+		return dle;
+	}
+}
+defListItemElement defListItem() :
+{
+	TextNode tn;
+}
+{
+	<SDT> <GT> tn = innerHTMLtext() <EDT> <GT> { return new defineListItemElement(tn); }
+	|
+	<SDD> <GT> tn = innerHTMLtext() <EDD> <GT> { return new describeListItemElement(tn); }
+}
+
+tableElement table() :
+{
+	tableElement te = new tableElement();
+	tableRowElement tre;
+}
+{
+	try
+	{
+		<STABLE> tableAttribute(te) <GT>
+	}
+	catch(ParseException pe)
+	{
+		attributesError("table");
+		recover2GT();
+	}
+		( tre = tableRow() { te.addRow(tre); } )*
+	try
+	{
+		<ETABLE> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "table");
+	}
+	finally
+	{
+		return te;
+	}
+}
+tableRowElement tableRow() :
+{
+	DOM_Node n = null;
+	tableRowElement tre = new tableRowElement();
+}
+{
+	<STR> <GT> ( n = tableData() { tre.addData(n); } )* <ETR> <GT> { return tre; }
+}
+DOM_Node tableData() :
+{
+	DOM_Node n;
+}
+{
+	<STD> <GT> n = innerHTMLtext() <ETD> <GT> { return n; }
+	|
+	<STH> <GT> n = innerHTMLtext() <ETH> <GT> { return n; }
+}
+
+selectElement select():
+{
+	TextNode tn;
+	selectElement se = new selectElement();
+}
+{
+	try
+	{
+		<SSELECT> selecttAttribute(se) <GT>
+	}
+	catch(ParseException pe)
+	{
+		attributesError("select");
+		recover2GT();
+	}
+		( tn = option() {se.addOption(tn);} )*
+	try
+	{
+		<ESELECT> <GT>
+	}
+	catch (ParseException pe)
+	{
+		missingEndTag(pe, "table");
+	}
+	finally
+	{
+		return se;
+	}
+}
+TextNode option() :
+{
+	TextNode tn;
+}
+{
+	<SOPTION> <GT> tn = innerHTMLtext() <EOPTION> <GT> { return tn; }
+}
+
+//	Attributes
+
+JAVACODE
+void addAttribute(ElementNode n, Token name, Token value, boolean strange)
+{
+	if (strange)
+	{
+		wrongAttName(name.image);
+	}
+	else
+	{
+		String val = getStringContent(value.image);
+		n.setAttributeValue(name.image, val);
+	}
+}
+
+JAVACODE
+void recover2GT()
+{
+	Token next = getNextToken();
+	while (next.kind != GT)
+	{
+		next = getNextToken();
+	}
+}
+
+void fontAttribute(fontElement n) :
+{
+	Token name, value;
+	boolean strange = false;
+}
+{
+	(
+		( name = <FONT_ATT> | name = <ID> | name = <ATTNAME> { strange = true; } )
+			<ASSIGN> value = <STRINGS>
+		{
+			addAttribute(n, name, value, strange);
+			strange = false;
+		}
+	)*
+}
+
+void bodyAttribute(bodyElement n) :
+{
+	Token name, value;
+	boolean strange = false;
+}
+{
+	(
+		(name = <BODY_ATT> | name = <ID> | name = <ATTNAME> { strange = true; } )
+			<ASSIGN> value = <STRINGS>
+		{
+			addAttribute(n, name, value, strange);
+			strange = false;
+		}
+	)*
+}
+
+void imageAttribute(imgElement n) :
+{
+	Token name, value;
+	boolean strange = false;
+}
+{
+	(
+		(name = <IMG_ATT> | name = <ID> | name = <ATTNAME> { strange = true; } )
+			<ASSIGN> value = <STRINGS>
+		{
+			addAttribute(n, name, value, strange);
+			strange = false;
+		}
+	)*
+}
+
+void inputAttribute(emptyElementNode n) :
+{
+	Token name, value;
+	boolean strange = false;
+}
+{
+	(
+		(name = <INPUT_ATT> | name = <ID> | name = <ATTNAME> { strange = true; } )
+			<ASSIGN> value = <STRINGS>
+		{
+			addAttribute(n, name, value, strange);
+			strange = false;
+		}
+	)*
+}
+
+void anchorAttribute(anchorElement n) :
+{
+	Token name, value;
+	boolean strange = false;
+}
+{
+	(
+		(name = <A_ATT> | name = <ID> | name = <ATTNAME> { strange = true; } )
+			<ASSIGN> value = <STRINGS>
+		{
+			addAttribute(n, name, value, strange);
+			strange = false;
+		}
+	)*
+}
+
+void tableAttribute(tableElement n) :
+{
+	Token name, value;
+	boolean strange = false;
+}
+{
+	(
+		(name = <TABLE_ATT> | name = <ID> | name = <ATTNAME> { strange = true; } )
+			<ASSIGN> value = <STRINGS>
+		{
+			addAttribute(n, name, value, strange);
+			strange = false;
+		}
+	)*
+}
+
+void selecttAttribute(selectElement n) :
+{
+	Token name, value;
+	boolean strange = false;
+}
+{
+	(
+		(name = <ID> | name = <ATTNAME> { strange = true; } )
+			<ASSIGN> value = <STRINGS>
+		{
+			addAttribute(n, name, value, strange);
+			strange = false;
+		}
+	)*
+}
+
+
+////////////////////////////////////////////
+//	javaScript rules
+
+void javaScriptCode() : {}
+{
+	{ if (DEBUG) System.out.println("Goto JavaScript..."); }
+
+	( DeclareFunction() | statement() | blockOfStatements() )*
+
+	{ if (DEBUG) System.out.println("Go back to HTML..."); }
+}
+
+JAVACODE
+void revocerJS()
+{
+	Token next = getNextToken();
+	while (next.kind != CLOSE_CURLY_BRACKET && next.kind != SEMI_COLON)
+	{
+		next = getNextToken();
+	}
+}
+
+void statement() : {}
+{
+	try
+	{
+		LOOKAHEAD(3) documentWrite() | assigneNodeValue()
+		|
+		alertBox()
+		|
+		LOOKAHEAD(2) callFunction() | declare_assigneVariable()
+		|
+		ifCondition() | switchCondition()
+		|
+		forLoop() | whileLoop() | doLoop()
+		|
+		returnStm() <SEMI_COLON>
+		|
+		<SEMI_COLON>
+	}
+	catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+}
+void blockOfStatements() : {}
+{
+	<OPEN_CURLY_BRACKET> ( statement() )* <CLOSE_CURLY_BRACKET>
+}
+
+String expression() :
+{
+	Token t;
+	String s;
+	double r;
+	String se1, se2;
+	boolean b;
+}
+{
+	t = <STRING> { s = getStringContent(t.image); } ( <PLUS> t = <STRING> { s += getStringContent(t.image); })* { EE = new StringExp(s); }{ return s; }
+	|
+LOOKAHEAD( ORlevel() )
+	b = ORlevel() { EE = e; }
+		( <QUESTION_MARK> se1 = expression() <COLON> se2 = expression()		//	Conditional Operator
+			{ if (DEBUG) System.out.println("Conditional Operator ==> " + b + " ? " + se1 + " : " + se2); }
+			{ return ( b ? se1 : se2 ); }
+		)?
+	 { return (b ? "1": "0"); }
+	|
+	r = mathExp() { EE = e; } { return Double.toString(r); }
+}
+
+//	Mathematical Expression
+double mathExp() :
+{
+	double sum, s;
+	boolean negative = false;
+}
+{
+	( <MINUS> { negative = true; } )?
+	sum = term() { e = (negative ? new unaryMinus(e1) : e1); }
+	(
+		<PLUS> s = term() { sum += s; } { e = new Plus(e, e1); }
+	|
+		<MINUS> s = term() { sum -= s; } { e = new Minus(e, e1); }
+	)*
+	{ return sum; }
+}
+double term() :
+{
+	double prod, p;
+}
+{
+	prod = fact()  { e1 = e2; }
+	(
+		<MULT> p = fact() { prod *= p; } { e1 = new Mult(e1, e2); }
+	|
+		<DIV> p = fact() { prod /= p; } { e1 = new Div(e1, e2); }
+	|
+		<MOD> p = fact() { prod %= p; } { e1 = new Mod(e1, e2); }
+	)*
+	{ return prod; }
+}
+double fact() :
+{
+	Token t;
+	double r;
+	String id;
+	boolean sqr = false;
+	List<mathExp> args;
+}
+{
+	id = documentGetElementByID() { e2 = new getElementNode(id); } { return 0; }
+	|
+	t = <IDENTIFIER>
+		( <OPEN_ROUND_BRACKET>
+			{
+				expStk.push(e);
+				expStk.push(e1);
+			}
+			args = arguments()
+			{
+				e1 = expStk.pop();
+				e = expStk.pop();
+			}
+		 <CLOSE_ROUND_BRACKET>
+			{ e2 = new callFuncNode(t.image, args); } { return 0; }
+		|
+		<INC> { e2 = new increase(t.image); } { return 0; }
+		|
+		<DEC> { e2 = new decrease(t.image); } { return 0; }
+		)?
+		{ e2 = new Var(t.image); } { return getVariableValue(t.image); }
+	|
+	t = <INTEGER>
+		{ e2 = new Int(Double.parseDouble(t.image)); } { return Double.parseDouble(t.image); }
+	|
+	(<SQR> {sqr = true;})? <OPEN_ROUND_BRACKET>
+		{
+			expStk.push(e);
+			expStk.push(e1);
+		}
+	r = mathExp()	//expression()
+		{
+			if (sqr)
+				e2 = new Power(e);
+			else
+				e2 = e;
+			e1 = expStk.pop();
+			e = expStk.pop();
+		}
+	 <CLOSE_ROUND_BRACKET>
+	{ return r; }
+}
+
+//	Condition
+boolean ORlevel() :
+{
+	boolean or, b;
+}
+{
+	or = ANDlevel()   { e = e1; }
+	( <OR>  b = ANDlevel() { or = or || b; }  { e = new Or(e, e1); })*
+	{ return or; }
+}
+boolean ANDlevel() :
+{
+	boolean and, b;
+}
+{
+	and = NOTlevel() { e1 = e2; }
+	( <AND> b = NOTlevel() { and = and && b; } { e1 = new And(e1, e2); } )*
+	{ return and; }
+}
+boolean NOTlevel() :
+{
+	boolean not = false, b;
+}
+{
+	( <NOT> { not = true; } )? b = LOGIC_OPERATIONlevel()
+	{ e2 = (not ? new Not(e3) : e3); } { return (not ? !b : b); }
+}
+boolean LOGIC_OPERATIONlevel() :
+{
+	Token t;
+	boolean b;
+	double ex1, ex2;
+	mathExp exp1, exp2;
+}
+{
+	t = <BOOL> { e3 = new Bool(t.image.equals("true")); } { return t.image.equals("true"); }
+	|
+LOOKAHEAD(mathExp())
+		{
+			expStk.push(e);
+			expStk.push(e1);
+			expStk.push(e2);
+		}
+	ex1 = mathExp()
+		{
+			exp1 = e;
+			e2 = expStk.pop();
+			e1 = expStk.pop();
+			e = expStk.pop();
+		}
+	t = <COMP_OP>
+		{
+			expStk.push(e);
+			expStk.push(e1);
+			expStk.push(e2);
+		}
+	ex2 = mathExp()
+		{
+			exp2 = e;
+			e2 = expStk.pop();
+			e1 = expStk.pop();
+			e = expStk.pop();
+		}
+	{ e3 = new CompOp(exp1, exp2, t.image); }
+	{
+		String op = t.image;
+		if (op.equals("=="))	return ex1 == ex2;
+		if (op.equals("!="))	return ex1 != ex2;
+		if (op.equals(">"))		return ex1 > ex2;
+		if (op.equals("<"))		return ex1 < ex2;
+		if (op.equals(">="))	return ex1 >= ex2;
+		if (op.equals("<="))	return ex1 <= ex2;
+		return false;
+	}
+	|
+	<OPEN_ROUND_BRACKET>
+		{
+			expStk.push(e);
+			expStk.push(e1);
+			expStk.push(e2);
+		}
+	b = ORlevel() <CLOSE_ROUND_BRACKET>
+		{
+			e3 = e;
+			e2 = expStk.pop();
+			e1 = expStk.pop();
+			e = expStk.pop();
+		}
+	{ return b; }
+}
+
+//	Variable Declaration and Assignement
+void declare_assigneVariable() :
+{
+	Token t;
+	boolean var = false;
+}
+{
+	try
+	{
+		( <VAR> {var = true;} )?
+		t = <IDENTIFIER>
+		( <ASSIGNE> expression()
+		| <INC> { EE = new increase(t.image); }
+		| <DEC> { EE = new decrease(t.image); })?
+		{
+			currentStm.addStm( new assigneNode(t.image, EE) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("declare or assigne variable : " + t.image); }
+}
+
+//	Function Daclaration and Calling
+List<String> parameters() :
+{
+	Token t;
+	List<String> params = new LinkedList<String>();
+}
+{
+	( t = <IDENTIFIER> { params.add(t.image); }
+	( <COMMA> t = <IDENTIFIER> { params.add(t.image); } )* )?
+	{ return params; }
+}
+void DeclareFunction() :
+{
+	Token t;
+	jsCodeNode funcBody;
+	List<String> params;
+}
+{
+	<FUN> t = <IDENTIFIER> <OPEN_ROUND_BRACKET> params = parameters() <CLOSE_ROUND_BRACKET>
+	{
+		stk.push(currentStm);
+		currentStm = new jsCodeNode();
+		funcBody = currentStm;
+	}
+		blockOfStatements()
+	{
+		currentStm = stk.pop();
+		functions.put(t.image, new funcNode(params, funcBody));
+	}
+	{ if (DEBUG) System.out.println("declare function -> " + t.image + " <-  with " + params.size() + " parameters"); }
+}
+
+List<mathExp> arguments() :
+{
+	Token t;
+	List<mathExp> args = new LinkedList<mathExp>();
+}
+{
+	( expression() { args.add(e); } ( <COMMA> expression() { args.add(e); } )* )?
+	{ return args; }
+}
+
+void callFunction() :
+{
+	Token t;
+	Integer paramN;
+	List<mathExp> args;
+}
+{
+	try
+	{
+		t = <IDENTIFIER> <OPEN_ROUND_BRACKET> args = arguments() <CLOSE_ROUND_BRACKET>
+		{
+			currentStm.addStm( new callFuncNode(t.image, args) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("calling function : " + t.image); }
+}
+
+//	Control Statements
+void returnStm() : {}
+{
+	<RETURN> { EE = null; } ( expression() )?
+	{
+		currentStm.addStm( new returnNode(EE) );
+		currentStm = currentStm.next();
+	}
+}
+
+void ifCondition() :
+{
+	jsCodeNode thenBody;
+	jsCodeNode elseBody = null;
+	mathExp ifCond;
+}
+{
+	try
+	{
+		<IF> <OPEN_ROUND_BRACKET> ORlevel() <CLOSE_ROUND_BRACKET>
+		{
+			ifCond = e;
+			stk.push(currentStm);
+		}
+		{
+			currentStm = new jsCodeNode();
+			thenBody = currentStm;
+		}
+			( statement() | blockOfStatements() )
+		(<ELSE>
+		{
+			currentStm = new jsCodeNode();
+			elseBody = currentStm;
+		}
+			( statement() | blockOfStatements() ))?	// to remove ambiguity :  remove '?'  ||  use { }
+		{
+			currentStm = stk.pop();
+			currentStm.addStm( new ifNode(ifCond, thenBody, elseBody) );
+			currentStm = currentStm.next();
+		}
+
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("if condition"); }
+}
+
+void switchCondition() :
+{
+	Token t, idToken;
+	boolean br = false;
+	jsCodeNode caseBody, dfBody = null;
+	LinkedList<caseNode> L = new LinkedList<caseNode>();
+}
+{
+	try
+	{
+		{ stk.push(currentStm); }
+		<SWITCH> <OPEN_ROUND_BRACKET> idToken = <IDENTIFIER> <CLOSE_ROUND_BRACKET>
+		<OPEN_CURLY_BRACKET>
+			( <CASE> t = <INTEGER> <COLON> {br = false;}
+				{
+					currentStm = new jsCodeNode();
+					caseBody = currentStm;
+				}
+			( statement() )* (<BREAK> {br = true;} (<SEMI_COLON>)* )?
+				{
+					L.add( new caseNode(Integer.parseInt(t.image), caseBody, br));
+				}
+			)*
+			( <SWITCH_DEFAULT> <COLON>
+				{
+					currentStm = new jsCodeNode();
+					dfBody = currentStm;
+				}
+			( statement() )* (<BREAK> (<SEMI_COLON>)? )?
+			)?
+		<CLOSE_CURLY_BRACKET>
+		{
+			currentStm = stk.pop();
+			currentStm.addStm( new switchNode(idToken.image, L, dfBody) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("switch statement"); }
+}
+
+void forLoop() :
+{
+	mathExp E1, E2, E3;
+	jsCodeNode prev;
+	jsCodeNode forBody;
+}
+{
+	try
+	{
+		{  E1 = E2 = E3 = null; }
+		<FOR> { prev = currentStm; }
+		<OPEN_ROUND_BRACKET>
+		(LOOKAHEAD(declare_assigneVariable()) declare_assigneVariable()
+		{ E1 = (mathExp)prev.stm(); currentStm = prev; currentStm.init(); } | mathExp() { E1 = e; })?
+		<SEMI_COLON>
+		(ORlevel() {E2 = e;} )?
+		<SEMI_COLON>
+		(LOOKAHEAD(declare_assigneVariable()) declare_assigneVariable()
+		{ E3 = (mathExp)prev.stm(); currentStm = prev; currentStm.init(); } | mathExp() { E3 = e; })?
+		<CLOSE_ROUND_BRACKET>
+		{
+			stk.push(currentStm);
+			currentStm = new jsCodeNode();
+			forBody = currentStm;
+		}
+			( statement() | blockOfStatements() )
+		{
+			currentStm = stk.pop();
+			currentStm.addStm( new forNode(E1, E2, E3, forBody) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("for loop"); }
+}
+
+void whileLoop() :
+{
+	jsCodeNode whileBody;
+	mathExp whileCond;
+}
+{
+	try
+	{
+		<WHILE> <OPEN_ROUND_BRACKET> ORlevel() <CLOSE_ROUND_BRACKET>
+		{
+			whileCond = e;
+			stk.push(currentStm);
+			currentStm = new jsCodeNode();
+			whileBody = currentStm;
+		}
+			( statement() | blockOfStatements() )
+		{
+			currentStm = stk.pop();
+			currentStm.addStm( new whileNode(whileCond, whileBody) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("while loop"); }
+}
+
+void doLoop() :
+{
+	jsCodeNode whileBody;
+	mathExp whileCond;
+}
+{
+	try
+	{
+		<DO>
+		{
+			stk.push(currentStm);
+			currentStm = new jsCodeNode();
+			whileBody = currentStm;
+		}
+			blockOfStatements()
+		<WHILE> <OPEN_ROUND_BRACKET> ORlevel() <CLOSE_ROUND_BRACKET>
+		{
+			whileCond = e;
+			currentStm = stk.pop();
+			currentStm.addStm( new doWhileNode(whileCond, whileBody) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("do loop"); }
+}
+
+//	DOM Access
+void writeArg(List<Expression> L) :
+{
+	Token t;
+	String s;
+}
+{
+	t = <STRING> {s = getStringContent(t.image);}
+	( <PLUS> t = <STRING> {s += getStringContent(t.image);} )*
+	{ L.add(new StringExp(s)); }
+	|
+	mathExp() { L.add(e); }
+}
+
+List<Expression> writeArgs() :
+{
+	List<Expression> L = new LinkedList<Expression>();
+}
+{
+	( writeArg(L) ( <COMMA> writeArg(L) )* )? { return L; }
+}
+
+void documentWrite() :
+{
+	Token t;
+	boolean newLine;
+	List<Expression> L;
+}
+{
+	try
+	{
+		<DOC> <DOT>
+		( <DOC_WRITE> { newLine = false; } | <DOC_WRITELN> { newLine = true; } )
+		<OPEN_ROUND_BRACKET> L = writeArgs() <CLOSE_ROUND_BRACKET>
+		{
+			currentStm.addStm( new writeNode(L, newLine) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("document.write"); }
+}
+
+void assigneNodeValue() :
+{
+	Token t;
+	String id;
+}
+{
+	id = documentGetElementByID() <ASSIGNE> expression()
+	{
+		currentStm.addStm( new assigneDOM_Node(id, EE) );
+		currentStm = currentStm.next();
+	}
+	{ if (DEBUG) System.out.println("documentGetElementByID : "); }
+}
+
+String documentGetElementByID() :
+{
+	Token t;
+}
+{
+	try
+	{
+		<DOC> <DOT> <DOC_GETELEM> <OPEN_ROUND_BRACKET> t = <STRING> <CLOSE_ROUND_BRACKET> <DOT> <VALUE>
+		{ return getStringContent(t.image); }
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+		return "";
+	}
+}
+
+void alertBox() :
+{
+	Token t;
+	List<Expression> L;
+}
+{
+	try
+	{
+		<ALERT> <OPEN_ROUND_BRACKET> L = writeArgs() <CLOSE_ROUND_BRACKET>
+		{
+			currentStm.addStm( new alertNode(L) );
+			currentStm = currentStm.next();
+		}
+	} catch (ParseException pe)
+	{
+		printParseException(pe);
+		revocerJS();
+	}
+	{ if (DEBUG) System.out.println("alert"); }
+}
+
+
+htmlElement parseHTML() :
+{
+	htmlElement root = null;
+}
+{
+	try {
+		root = html() <EOF>
+	}
+	catch (Exception e){
+		System.out.println("UNHANDLED PARSE EXECPTION");
+		System.out.println(e);
+	}
+	finally
+	{
+		return root;
+	}
+}
